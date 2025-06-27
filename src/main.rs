@@ -181,6 +181,10 @@ impl LanguageHandler for Ruff {
         let output = command.output()?;
         let mut valid_lines: Vec<String> = vec![];
         for line in String::from_utf8_lossy(&output.stdout).trim().lines() {
+            // Skip "All checks passed!" message
+            if line == "All checks passed!" {
+                continue;
+            }
             // breaks on "Found x error."
             if line.starts_with("Found ") {
                 break;
