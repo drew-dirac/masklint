@@ -52,39 +52,61 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    for command in maskfile.commands {
-        let Some(script)  = command.script else { continue };
-
-        let language_handler: &dyn LanguageHandler = match script.executor.as_str() {
-            "sh" | "bash" | "zsh" => &Shellcheck {},
-            "py" | "python" => &Ruff {},
-            "rb" | "ruby" => &Rubocop {},
-            _ => &Catchall {},
+    // Function to process a command and its subcommands
+    fn process_command(command: mask_parser::maskfile::Command, out_dir: &PathBuf, is_dump: bool, parent_name: Option<&str>) -> anyhow::Result<()> {
+        // Build full command name including parent
+        let full_command_name = if let Some(parent) = parent_name {
+            format!("{} {}", parent, command.name)
+        } else {
+            command.name.clone()
         };
 
-        let mut file_name = command.name.clone();
-        file_name.push_str(language_handler.file_extension());
-        let file_path = out_dir.join(&file_name);
-        let mut script_file = File::options().create_new(true).append(true).open(&file_path)?;
-        let content = language_handler.content(&script)?;
-        script_file.write_all(content.as_bytes())?;
+        if let Some(script) = command.script {
+            let language_handler: &dyn LanguageHandler = match script.executor.as_str() {
+                "sh" | "bash" | "zsh" => &Shellcheck {},
+                "py" | "python" => &Ruff {},
+                "rb" | "ruby" => &Rubocop {},
+                _ => &Catchall {},
+            };
 
-        if matches!(cli.command, Commands::Dump { .. }) {
-            continue;
-        }
+            let mut file_name = full_command_name.replace(" ", "_");
+            file_name.push_str(language_handler.file_extension());
+            let file_path = out_dir.join(&file_name);
+            let mut script_file = File::options().create_new(true).append(true).open(&file_path)?;
+            let content = language_handler.content(&script)?;
+            script_file.write_all(content.as_bytes())?;
 
-        let findings = language_handler.execute(&file_path).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => {
-                anyhow!("executable for {language_handler} not found in $PATH")
+            if !is_dump {
+                let findings = language_handler.execute(&file_path).map_err(|e| match e.kind() {
+                    io::ErrorKind::NotFound => {
+                        anyhow!("executable for {language_handler} not found in $PATH")
+                    }
+                    _ => anyhow!(e),
+                })?;
+                if !findings.is_empty() {
+                    println!("{}", full_command_name.bold().cyan().underline());
+                    println!("{findings}\n");
+                }
             }
-            _ => anyhow!(e),
-        })?;
-        if findings.is_empty() {
-            continue;
         }
 
-        println!("{}", command.name.bold().cyan().underline());
-        println!("{findings}\n");
+        // Process subcommands recursively
+        if !command.subcommands.is_empty() {
+            let parent_name = if parent_name.is_some() {
+                full_command_name
+            } else {
+                command.name
+            };
+            for subcmd in command.subcommands {
+                process_command(subcmd, out_dir, is_dump, Some(&parent_name))?;
+            }
+        }
+        Ok(())
+    }
+
+    let is_dump = matches!(cli.command, Commands::Dump { .. });
+    for command in maskfile.commands {
+        process_command(command, &out_dir, is_dump, None)?;
     }
     Ok(())
 }
@@ -150,12 +172,13 @@ impl LanguageHandler for Ruff {
         ".py"
     }
     fn execute(&self, path: &Path) -> Result<String, io::Error> {
-        let output = Command::new("ruff")
-            .arg("--show-source")
-            .arg("--format=text")
-            .arg("--no-cache")
-            .arg(path)
-            .output()?;
+        let mut command = Command::new("ruff");
+        command.arg("check")
+                .arg("--output-format=full")
+                .arg("--no-cache")
+                .arg(path);
+
+        let output = command.output()?;
         let mut valid_lines: Vec<String> = vec![];
         for line in String::from_utf8_lossy(&output.stdout).trim().lines() {
             // breaks on "Found x error."
