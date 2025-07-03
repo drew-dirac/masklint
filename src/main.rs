@@ -66,6 +66,7 @@ fn main() -> anyhow::Result<()> {
                 "sh" | "bash" => &Shellcheck {},
                 "py" | "python" => &Ruff {},
                 "rb" | "ruby" => &Rubocop {},
+                "zsh" | "nu" => &NoOp {},
                 _ => &Catchall {},
             };
 
@@ -131,6 +132,27 @@ impl Display for Catchall {
 impl LanguageHandler for Catchall {
     fn execute(&self, _: &Path) -> Result<String, io::Error> {
         Ok("no linter found for target".to_string())
+    }
+}
+
+#[derive(Debug)]
+struct NoOp;
+impl Display for NoOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no-op")
+    }
+}
+impl LanguageHandler for NoOp {
+    fn file_extension(&self) -> &'static str {
+        ".sh"
+    }
+    fn execute(&self, _: &Path) -> Result<String, io::Error> {
+        Ok(String::new())
+    }
+    fn content(&self, script: &Script) -> Result<String, io::Error> {
+        let mut res = format!("#!/usr/bin/env {}\n", script.executor);
+        res.push_str(&script.source);
+        Ok(res)
     }
 }
 
